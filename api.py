@@ -4,12 +4,11 @@ import pandas as pd
 import numpy as np
 from supabase import create_client, Client
 from typing import List, Dict
-import asyncio
 
 app = FastAPI(
     title="Solar Site Optimizer API",
-    description="API for calculating relative solar suitability for 456 Pakistan Cities",
-    version="2.0.0"
+    description="Optimized API for 456 Pakistan Cities using Materialized Views",
+    version="3.0.0"
 )
 
 app.add_middleware(
@@ -23,42 +22,33 @@ app.add_middleware(
 # --- CONFIGURATION ---
 SUPABASE_URL = "https://lkqemtanqjaafsbprppp.supabase.co"
 SUPABASE_KEY = "sb_publishable_ysyd8I4sz1b67RXU505a-A_YOIc8x2T"
-TABLE_NAME = "pakistan_city_solar"  # Your updated table name
+# We now target the VIEW which has only 456 pre-aggregated rows
+VIEW_NAME = "city_solar_stats" 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# --- 1. DATA FETCHING ENGINE (PAGINATED) ---
-async def fetch_all_data():
-    """Fetches 1M+ rows in chunks to bypass Supabase's 100k limit."""
-    all_data = []
-    page_size = 100000 
-    offset = 0
-    
-    while True:
-        # Fetching only necessary columns saves massive RAM/Bandwidth
-        response = supabase.table(TABLE_NAME).select(
-            "city_name, ghi, dni, temp_c, humidity, aod"
-        ).range(offset, offset + page_size - 1).execute()
-        
-        data = response.data
-        if not data:
-            break
-            
-        all_data.extend(data)
-        offset += page_size
-        
-        # Safety stop: Remove or adjust if you want the absolute full history
-        if len(data) < page_size:
-            break
-            
-    return pd.DataFrame(all_data)
+# --- 1. LIGHTWEIGHT DATA FETCHING ---
+async def fetch_optimized_data():
+    """Fetches pre-aggregated city stats (Instant & RAM friendly)"""
+    try:
+        # No pagination loop needed because 456 rows fits in one request
+        response = supabase.table(VIEW_NAME).select("*").execute()
+        if not response.data:
+            return pd.DataFrame()
+        return pd.DataFrame(response.data)
+    except Exception as e:
+        print(f"Database Error: {e}")
+        return pd.DataFrame()
 
-# --- 2. ANALYTICS ENGINE ---
+# --- 2. ANALYTICS ENGINE (Optimized for Averages) ---
 def process_solar_logic(df: pd.DataFrame):
+    if df.empty:
+        return df
+        
     cols = ['ghi', 'dni', 'temp_c', 'humidity', 'aod']
     df[cols] = df[cols].apply(pd.to_numeric, errors='coerce')
     df = df.dropna(subset=['ghi', 'temp_c'])
 
-    # Normalization Logic
+    # Normalization (0 to 1)
     def norm_ben(s): return (s - s.min()) / (s.max() - s.min()) if s.max() != s.min() else 1.0
     def norm_cost(s): return (s.max() - s) / (s.max() - s.min()) if s.max() != s.min() else 1.0
 
@@ -68,46 +58,38 @@ def process_solar_logic(df: pd.DataFrame):
     df['n_hum'] = norm_cost(df['humidity'])
     df['n_aod'] = norm_cost(df['aod'])
 
-    # Weighted Score (Pakistan-Specific)
+    # Weighted Score (Applied to city averages)
     df['daily_score'] = (
         df['n_ghi'] * 0.45 + df['n_dni'] * 0.20 + 
         df['n_temp'] * 0.15 + df['n_hum'] * 0.10 + df['n_aod'] * 0.10
     )
-    
-    # Aggregating by city_name instead of lat/lng
-    site_stats = df.groupby('city_name').agg({
-        'daily_score': 'mean',
-        'ghi': 'mean',
-        'temp_c': 'mean',
-        'aod': 'mean'
-    }).reset_index()
 
     # Relative Benchmarking
-    top_score = site_stats['daily_score'].max()
-    site_stats['performance_ratio'] = (site_stats['daily_score'] / top_score).round(4)
+    top_score = df['daily_score'].max()
+    df['performance_ratio'] = (df['daily_score'] / top_score).round(4)
     
-    # Add Suitability Labels
     def get_label(r):
         if r >= 0.99: return "Optimal (Benchmark)"
         if r >= 0.90: return "Highly Suitable"
         if r >= 0.75: return "Suitable"
         return "Sub-Optimal"
     
-    site_stats['suitability'] = site_stats['performance_ratio'].apply(get_label)
+    df['suitability'] = df['performance_ratio'].apply(get_label)
     
-    return site_stats.sort_values(by='daily_score', ascending=False)
+    # Clean up and sort
+    return df.sort_values(by='daily_score', ascending=False)
 
 # --- 3. ENDPOINTS ---
 
 @app.get("/health")
 def health_check():
-    return {"status": "online", "rows_processed": "dynamic"}
+    return {"status": "online", "mode": "materialized_view_optimized"}
 
 @app.get("/rankings")
 async def get_all_rankings():
-    """Returns top performing cities across Pakistan."""
+    """Returns all 456 cities instantly."""
     try:
-        df = await fetch_all_data()
+        df = await fetch_optimized_data()
         if df.empty:
             return {"message": "No data found", "data": []}
             
@@ -118,9 +100,11 @@ async def get_all_rankings():
 
 @app.get("/top-sites")
 async def get_top_sites(limit: int = 7):
-    """Returns the top X (default 7) optimal cities."""
+    """Returns the top sites (default 7) instantly."""
     try:
-        df = await fetch_all_data()
+        df = await fetch_optimized_data()
+        if df.empty:
+            return []
         results = process_solar_logic(df)
         return results.head(limit).to_dict(orient='records')
     except Exception as e:
