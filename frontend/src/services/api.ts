@@ -1,9 +1,13 @@
 export interface APISiteRanking {
-    site_id: string; // "lat, lng"
+    city_name: string;
+    latitude: number;
+    longitude: number;
     daily_score: number;
     ghi: number;
+    dni: number;
     temp_c: number;
     performance_ratio: number;
+    suitability: string;
 }
 
 export interface SiteRanking extends APISiteRanking {
@@ -18,15 +22,16 @@ export const fetchRankings = async (): Promise<SiteRanking[]> => {
     if (!response.ok) {
         throw new Error('Failed to fetch rankings');
     }
-    const data: APISiteRanking[] = await response.json();
 
-    // Parse lat/lng from site_id
-    return data.map(site => {
-        const [latStr, lngStr] = site.site_id.split(', ');
-        return {
-            ...site,
-            lat: parseFloat(latStr),
-            lng: parseFloat(lngStr)
-        };
-    });
+    // The new API endpoint returns a top-level JSON list, but the /rankings endpoint 
+    // in api.py might return {"message": "No data found", "data": []} if empty,
+    // otherwise it returns results.to_dict(orient='records') which is a list.
+    const result = await response.json();
+    const data: APISiteRanking[] = Array.isArray(result) ? result : result.data || [];
+
+    return data.map(site => ({
+        ...site,
+        lat: site.latitude,
+        lng: site.longitude
+    }));
 };

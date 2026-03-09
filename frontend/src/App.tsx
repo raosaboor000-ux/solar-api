@@ -7,6 +7,7 @@ import { SiteMap } from './components/SiteMap';
 
 export default function App() {
   const [sites, setSites] = useState<SiteRanking[]>([]);
+  const [selectedCity, setSelectedCity] = useState<SiteRanking | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -16,6 +17,9 @@ export default function App() {
       setError(null);
       const data = await fetchRankings();
       setSites(data);
+      if (data.length > 0) {
+        setSelectedCity(data[0]);
+      }
     } catch (err: any) {
       setError(err.message || 'Failed to load data');
     } finally {
@@ -70,14 +74,14 @@ export default function App() {
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-[calc(100vh-12rem)] min-h-[800px]">
             <div className="lg:col-span-1 flex flex-col gap-6 h-full">
               <div className="shrink-0">
-                <TopSiteCard site={sites[0] || null} />
+                <TopSiteCard site={selectedCity} isTopSite={selectedCity?.city_name === sites[0]?.city_name} />
               </div>
               <div className="flex-1 min-h-0">
-                <SiteTable sites={sites} />
+                <SiteTable sites={sites} selectedCity={selectedCity} onSelectCity={setSelectedCity} />
               </div>
             </div>
             <div className="lg:col-span-2 h-full min-h-[400px]">
-              <SiteMap sites={sites} />
+              <SiteMap sites={sites} selectedCity={selectedCity} onSelectCity={setSelectedCity} />
             </div>
           </div>
         )}
